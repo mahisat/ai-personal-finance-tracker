@@ -1,0 +1,25 @@
+# ── Dependencies ──────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+
+# MySQL async driver
+aiomysql==0.2.0
+SQLAlchemy[asyncio]==2.0.30
+PyMySQL==1.1.0          # sync fallback (LangChain SQL toolkit uses it)
+
+# LangChain core + MySQL
+langchain==0.2.6
+langchain-openai==0.1.13
+langchain-community==0.2.6
+
+# Data validation
+pydantic==2.7.1
+pydantic-settings==2.2.1
+
+# Scheduling (nightly insight jobs)
+apscheduler==3.10.4
+
+# Misc
+python-dotenv==1.0.1
+
+numpy>=1.26.0,<2.0.0
