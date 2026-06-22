@@ -115,12 +115,12 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <MetricCard
           label="Spent this month"
-          value={`$${totalSpent.toFixed(2)}`}
-          sub={`of $${totalBudget.toFixed(2)} budgeted`}
+          value={`₹${totalSpent.toFixed(2)}`}
+          sub={`of ₹${totalBudget.toFixed(2)} budgeted`}
         />
         <MetricCard
           label="Remaining"
-          value={`$${totalRemaining.toFixed(2)}`}
+          value={`₹${totalRemaining.toFixed(2)}`}
           sub={totalRemaining < 0 ? "Over budget" : "Available"}
         />
         <MetricCard

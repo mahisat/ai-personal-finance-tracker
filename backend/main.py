@@ -11,23 +11,18 @@ Endpoints:
   POST   /users/{user_id}/chat
   GET    /users/{user_id}/insights
 """
-import asyncio
-import sys
-
-# Windows requires SelectorEventLoop for aiomysql compatibility
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
 import logging
 from contextlib import asynccontextmanager
 from datetime import date
 from typing import Annotated, Optional
+from fastapi import Request
+
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import func, select, delete, text
+from sqlalchemy import func, select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, load_only
 
 from config import Settings, build_async_engine, build_session_factory, get_settings
 from models import AIConversation, Base, Budget, Category, Transaction, User
@@ -38,10 +33,6 @@ from schemas import (
     UserCreate, UserOut,
 )
 from ai_agent import InsightEngine, build_sql_agent
-from fastapi import Request
-
-
-
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +70,10 @@ app.add_middleware(
 
 
 # ── Dependencies ──────────────────────────────────────────────
-async def get_db(request: Request) -> AsyncSession:
+async def get_db(request : Request) -> AsyncSession:   # type: ignore[override]
     async with request.app.state.session_factory() as session:
         yield session
+
 
 DB = Annotated[AsyncSession, Depends(get_db)]
 
@@ -106,9 +98,33 @@ async def create_user(body: UserCreate, db: DB):
 # ── Categories ────────────────────────────────────────────────
 @app.get("/categories", response_model=list[CategoryOut])
 async def list_categories(db: DB):
-    rows = await db.execute(select(Category).order_by(Category.name))
-    return rows.scalars().all()
+    result = await db.execute(
+        select(Category)
+        .where(Category.parent_id == None)
+        .options(selectinload(Category.children))
+        .order_by(Category.name)
+    )
+    parents = result.scalars().all()
 
+    # Manually build the response to ensure children are included
+    return [
+        {
+            "id": p.id,
+            "name": p.name,
+            "icon": p.icon,
+            "children": [
+                {"id": c.id, "name": c.name, "icon": c.icon}
+                for c in p.children
+            ],
+        }
+        for p in parents
+    ]
+
+@app.get("/debug/categories")
+async def debug_categories(db: DB):
+    from sqlalchemy import text
+    result = await db.execute(text("SELECT id, name, parent_id FROM categories LIMIT 5"))
+    return [dict(r) for r in result.mappings()]
 
 # ── Transactions ──────────────────────────────────────────────
 @app.post(
@@ -123,10 +139,16 @@ async def create_transaction(user_id: int, body: TransactionCreate, db: DB):
     db.add(tx)
     await db.commit()
 
-    # Reload with category relationship
     result = await db.execute(
         select(Transaction)
-        .options(selectinload(Transaction.category))
+        .options(
+            selectinload(Transaction.category).options(
+                load_only(Category.id, Category.name, Category.icon, Category.parent_id),
+                selectinload(Category.children).load_only(
+                    Category.id, Category.name, Category.icon
+                ),
+            )
+        )
         .where(Transaction.id == tx.id)
     )
     return result.scalar_one()
@@ -147,7 +169,14 @@ async def list_transactions(
 
     q = (
         select(Transaction)
-        .options(selectinload(Transaction.category))
+        .options(
+            selectinload(Transaction.category).options(
+                load_only(Category.id, Category.name, Category.icon, Category.parent_id),
+                selectinload(Category.children).load_only(
+                    Category.id, Category.name, Category.icon
+                ),
+            )
+        )
         .where(Transaction.user_id == user_id)
         .order_by(Transaction.date.desc(), Transaction.id.desc())
     )
@@ -172,7 +201,6 @@ async def list_transactions(
         page_size=page_size,
         items=rows.scalars().all(),
     )
-
 
 @app.delete(
     "/users/{user_id}/transactions/{tx_id}",
@@ -222,13 +250,18 @@ async def upsert_budget(user_id: int, body: BudgetUpsert, db: DB):
 
     result = await db.execute(
         select(Budget)
-        .options(selectinload(Budget.category))
+        .options(
+            selectinload(Budget.category).options(
+                selectinload(Category.children).load_only(
+                    Category.id, Category.name, Category.icon
+                )
+            )
+        )
         .where(Budget.id == budget.id)
     )
     return result.scalar_one()
 
 
-@app.get("/users/{user_id}/budgets/status", response_model=list[BudgetStatus])
 @app.get("/users/{user_id}/budgets/status", response_model=list[BudgetStatus])
 async def budget_status(
     user_id: int,

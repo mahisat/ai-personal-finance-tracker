@@ -1,12 +1,12 @@
 """
-models.py — SQLAlchemy ORM models (MySQL)
+models.py — SQLAlchemy ORM models (MySQL) with parent/child categories
 """
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import (
-    BigInteger, Column, Date, DateTime, Enum, ForeignKey,
+    BigInteger, Date, DateTime, Enum, ForeignKey,
     Index, Numeric, String, Text, func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -33,8 +33,19 @@ class Category(Base):
     __tablename__ = "categories"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
     icon: Mapped[Optional[str]] = mapped_column(String(50))
+    parent_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("categories.id", ondelete="CASCADE"), nullable=True
+    )
+
+    # Self-referential relationships
+    parent: Mapped[Optional["Category"]] = relationship(
+        "Category", back_populates="children", remote_side="Category.id"
+    )
+    children: Mapped[list["Category"]] = relationship(
+        "Category", back_populates="parent", order_by="Category.name"
+    )
 
     transactions: Mapped[list["Transaction"]] = relationship(back_populates="category")
     budgets: Mapped[list["Budget"]] = relationship(back_populates="category")

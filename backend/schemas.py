@@ -23,11 +23,18 @@ class UserOut(BaseModel):
 
 
 # ── Categories ────────────────────────────────────────────────
+class SubCategoryOut(BaseModel):
+    id: int
+    name: str
+    icon: Optional[str] = None
+    model_config = {"from_attributes": True}
+
+
 class CategoryOut(BaseModel):
     id: int
     name: str
     icon: Optional[str] = None
-
+    children: list[SubCategoryOut] = []
     model_config = {"from_attributes": True}
 
 

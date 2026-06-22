@@ -14,17 +14,32 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 // ── Types ──────────────────────────────────────────────────────
+export interface SubCategory {
+  id: number;
+  name: string;
+  icon: string | null;
+}
+
 export interface Category {
   id: number;
   name: string;
   icon: string | null;
+  children: SubCategory[];
+}
+
+// Flat category used inside transaction/budget responses
+export interface CategoryFlat {
+  id: number;
+  name: string;
+  icon: string | null;
+  parent_id: number | null;
 }
 
 export interface Transaction {
   id: number;
   amount: string;
   type: "income" | "expense";
-  category: Category | null;
+  category: CategoryFlat | null;
   description: string | null;
   date: string;
   created_at: string;
@@ -39,7 +54,7 @@ export interface TransactionPage {
 
 export interface Budget {
   id: number;
-  category: Category;
+  category: CategoryFlat;
   monthly_limit: string;
 }
 
