@@ -42,7 +42,7 @@ function BudgetBar({ row }: { row: BudgetStatus }) {
       <div className="flex justify-between text-sm">
         <span className="text-slate-700 font-medium">{row.category}</span>
         <span className="text-slate-400">
-          ${Number(row.spent).toFixed(2)} / $
+          ₹{Number(row.spent).toFixed(2)} / ₹
           {Number(row.monthly_limit).toFixed(2)}
         </span>
       </div>
@@ -191,7 +191,7 @@ export default function Dashboard() {
                   </p>
                 </div>
                 <Badge variant={tx.type}>
-                  {tx.type === "income" ? "+" : "−"}$
+                  {tx.type === "income" ? "+" : "−"}₹
                   {Number(tx.amount).toFixed(2)}
                 </Badge>
               </div>
