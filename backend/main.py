@@ -65,14 +65,20 @@ app = FastAPI(
 )
 
 _settings_for_cors = get_settings()
+
+origins = [
+    origin.strip()
+    for origin in _settings_for_cors.cors_origins.split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in _settings_for_cors.cors_origins.split(",")],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # ── Dependencies ──────────────────────────────────────────────
 async def get_db(request: Request) -> AsyncSession:  # type: ignore[override]
