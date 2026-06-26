@@ -1,19 +1,40 @@
 // src/api/client.ts
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
+// Module-level token — set via setAuthToken() when the user logs in/out
+let _token: string | null = null;
+
+export function setAuthToken(token: string | null) {
+  _token = token;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options?.headers as Record<string, string>),
+  };
+  if (_token) {
+    headers["Authorization"] = `Bearer ${_token}`;
+  }
+
+  const res = await fetch(`${BASE}${path}`, { ...options, headers });
+
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? "Request failed");
   }
+  if (res.status === 204) return undefined as T;
   return res.json();
 }
 
 // ── Types ──────────────────────────────────────────────────────
+export interface AuthUser {
+  user_id: number;
+  name: string;
+  email: string;
+  access_token: string;
+}
+
 export interface SubCategory {
   id: number;
   name: string;
@@ -79,6 +100,18 @@ export interface ChatResponse {
 
 // ── API calls ──────────────────────────────────────────────────
 export const api = {
+  auth: {
+    register: (body: { email: string; name: string; password: string }) =>
+      request<AuthUser>("/auth/register", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    login: (body: { email: string; password: string }) =>
+      request<AuthUser>("/auth/login", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+  },
   categories: {
     list: () => request<Category[]>("/categories"),
   },

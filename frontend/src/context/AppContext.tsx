@@ -1,18 +1,67 @@
 // src/context/AppContext.tsx
-import { createContext, useContext, useState, ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import { setAuthToken } from "../api/client";
+
+interface AuthUser {
+  id: number;
+  name: string;
+  email: string;
+}
 
 interface AppContextValue {
   userId: number;
-  setUserId: (id: number) => void;
+  user: AuthUser | null;
+  isAuthenticated: boolean;
+  login: (token: string, user: AuthUser) => void;
+  logout: () => void;
 }
+
+const STORAGE_KEY = "finance_auth";
 
 const AppContext = createContext<AppContextValue | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  // Default to user 1 for demo — swap for real auth
-  const [userId, setUserId] = useState<number>(1);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [token, setToken] = useState<string | null>(null);
+
+  // Rehydrate from localStorage on first load
+  useEffect(() => {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    try {
+      const { token: t, user: u } = JSON.parse(raw);
+      setToken(t);
+      setUser(u);
+      setAuthToken(t);
+    } catch {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+  }, []);
+
+  function login(newToken: string, newUser: AuthUser) {
+    setToken(newToken);
+    setUser(newUser);
+    setAuthToken(newToken);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ token: newToken, user: newUser }));
+  }
+
+  function logout() {
+    setToken(null);
+    setUser(null);
+    setAuthToken(null);
+    localStorage.removeItem(STORAGE_KEY);
+  }
+
   return (
-    <AppContext.Provider value={{ userId, setUserId }}>
+    <AppContext.Provider
+      value={{
+        userId: user?.id ?? 0,
+        user,
+        isAuthenticated: token !== null && user !== null,
+        login,
+        logout,
+      }}
+    >
       {children}
     </AppContext.Provider>
   );

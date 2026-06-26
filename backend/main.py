@@ -1,7 +1,9 @@
 """
 main.py — FastAPI application
 Endpoints:
-  POST   /users
+  POST   /auth/register
+  POST   /auth/login
+  GET    /users/me
   GET    /categories
   POST   /users/{user_id}/transactions
   GET    /users/{user_id}/transactions
@@ -17,24 +19,27 @@ from datetime import date
 from typing import Annotated, Optional
 from fastapi import Request
 
-
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import func, select, delete
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import func, select, delete, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload, load_only
 
+from auth import create_access_token, decode_token, hash_password, verify_password
 from config import Settings, build_async_engine, build_session_factory, get_settings
 from models import AIConversation, Base, Budget, Category, Transaction, User
 from schemas import (
     BudgetOut, BudgetStatus, BudgetUpsert,
     CategoryOut, ChatRequest, ChatResponse,
-    InsightOut, TransactionCreate, TransactionOut, TransactionPage,
+    InsightOut, LoginRequest, RegisterRequest, TokenResponse,
+    TransactionCreate, TransactionOut, TransactionPage,
     UserCreate, UserOut,
 )
 from ai_agent import InsightEngine, build_sql_agent
 
 logger = logging.getLogger(__name__)
+bearer_scheme = HTTPBearer()
 
 
 # ── App lifecycle ─────────────────────────────────────────────
@@ -45,7 +50,6 @@ async def lifespan(app: FastAPI):
     app.state.session_factory = build_session_factory(engine)
     app.state.settings = settings
 
-    # Create tables if they don't exist yet (safe for dev; use Alembic in prod)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -62,7 +66,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],   # React dev server
+    allow_origins=["http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -70,7 +74,7 @@ app.add_middleware(
 
 
 # ── Dependencies ──────────────────────────────────────────────
-async def get_db(request : Request) -> AsyncSession:   # type: ignore[override]
+async def get_db(request: Request) -> AsyncSession:  # type: ignore[override]
     async with request.app.state.session_factory() as session:
         yield session
 
@@ -78,24 +82,71 @@ async def get_db(request : Request) -> AsyncSession:   # type: ignore[override]
 DB = Annotated[AsyncSession, Depends(get_db)]
 
 
-async def get_user_or_404(user_id: int, db: DB) -> User:
+async def get_current_user(
+    credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer_scheme)],
+    request: Request,
+    db: DB,
+) -> User:
+    settings: Settings = request.app.state.settings
+    user_id = decode_token(credentials.credentials, settings.app_secret_key)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
     user = await db.get(User, user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
     return user
 
 
-# ── Users ─────────────────────────────────────────────────────
-@app.post("/users", response_model=UserOut, status_code=status.HTTP_201_CREATED)
-async def create_user(body: UserCreate, db: DB):
-    user = User(email=body.email, name=body.name)
+CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+def _require_same_user(current_user: User, user_id: int) -> None:
+    if current_user.id != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+
+# ── Auth ──────────────────────────────────────────────────────
+@app.post("/auth/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+async def register(body: RegisterRequest, request: Request, db: DB):
+    existing = await db.execute(select(User).where(User.email == body.email))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    user = User(
+        email=body.email,
+        name=body.name,
+        password_hash=hash_password(body.password),
+    )
     db.add(user)
     await db.commit()
     await db.refresh(user)
-    return user
+
+    settings: Settings = request.app.state.settings
+    token = create_access_token(user.id, settings.app_secret_key)
+    return TokenResponse(access_token=token, user_id=user.id, name=user.name, email=user.email)
 
 
-# ── Categories ────────────────────────────────────────────────
+@app.post("/auth/login", response_model=TokenResponse)
+async def login(body: LoginRequest, request: Request, db: DB):
+    result = await db.execute(select(User).where(User.email == body.email))
+    user = result.scalar_one_or_none()
+
+    # Constant-time check — same error whether email or password is wrong
+    if user is None or not user.password_hash or not verify_password(body.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    settings: Settings = request.app.state.settings
+    token = create_access_token(user.id, settings.app_secret_key)
+    return TokenResponse(access_token=token, user_id=user.id, name=user.name, email=user.email)
+
+
+# ── Current user ──────────────────────────────────────────────
+@app.get("/users/me", response_model=UserOut)
+async def get_me(current_user: CurrentUser):
+    return current_user
+
+
+# ── Categories (public) ───────────────────────────────────────
 @app.get("/categories", response_model=list[CategoryOut])
 async def list_categories(db: DB):
     result = await db.execute(
@@ -105,8 +156,6 @@ async def list_categories(db: DB):
         .order_by(Category.name)
     )
     parents = result.scalars().all()
-
-    # Manually build the response to ensure children are included
     return [
         {
             "id": p.id,
@@ -120,11 +169,13 @@ async def list_categories(db: DB):
         for p in parents
     ]
 
+
 @app.get("/debug/categories")
 async def debug_categories(db: DB):
     from sqlalchemy import text
     result = await db.execute(text("SELECT id, name, parent_id FROM categories LIMIT 5"))
     return [dict(r) for r in result.mappings()]
+
 
 # ── Transactions ──────────────────────────────────────────────
 @app.post(
@@ -132,8 +183,8 @@ async def debug_categories(db: DB):
     response_model=TransactionOut,
     status_code=status.HTTP_201_CREATED,
 )
-async def create_transaction(user_id: int, body: TransactionCreate, db: DB):
-    await get_user_or_404(user_id, db)
+async def create_transaction(user_id: int, body: TransactionCreate, db: DB, current_user: CurrentUser):
+    _require_same_user(current_user, user_id)
 
     tx = Transaction(user_id=user_id, **body.model_dump())
     db.add(tx)
@@ -158,6 +209,7 @@ async def create_transaction(user_id: int, body: TransactionCreate, db: DB):
 async def list_transactions(
     user_id: int,
     db: DB,
+    current_user: CurrentUser,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     type: Optional[str] = Query(None, pattern="^(income|expense)$"),
@@ -165,7 +217,7 @@ async def list_transactions(
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
 ):
-    await get_user_or_404(user_id, db)
+    _require_same_user(current_user, user_id)
 
     q = (
         select(Transaction)
@@ -189,9 +241,7 @@ async def list_transactions(
     if to_date:
         q = q.where(Transaction.date <= to_date)
 
-    total_result = await db.execute(
-        select(func.count()).select_from(q.subquery())
-    )
+    total_result = await db.execute(select(func.count()).select_from(q.subquery()))
     total = total_result.scalar_one()
 
     rows = await db.execute(q.offset((page - 1) * page_size).limit(page_size))
@@ -202,11 +252,14 @@ async def list_transactions(
         items=rows.scalars().all(),
     )
 
+
 @app.delete(
     "/users/{user_id}/transactions/{tx_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-async def delete_transaction(user_id: int, tx_id: int, db: DB):
+async def delete_transaction(user_id: int, tx_id: int, db: DB, current_user: CurrentUser):
+    _require_same_user(current_user, user_id)
+
     result = await db.execute(
         delete(Transaction).where(
             Transaction.id == tx_id,
@@ -224,9 +277,8 @@ async def delete_transaction(user_id: int, tx_id: int, db: DB):
     response_model=BudgetOut,
     status_code=status.HTTP_200_OK,
 )
-async def upsert_budget(user_id: int, body: BudgetUpsert, db: DB):
-    """Create or update a monthly budget for a category."""
-    await get_user_or_404(user_id, db)
+async def upsert_budget(user_id: int, body: BudgetUpsert, db: DB, current_user: CurrentUser):
+    _require_same_user(current_user, user_id)
 
     existing = await db.execute(
         select(Budget).where(
@@ -266,11 +318,14 @@ async def upsert_budget(user_id: int, body: BudgetUpsert, db: DB):
 async def budget_status(
     user_id: int,
     db: DB,
+    current_user: CurrentUser,
     year: int = Query(default=None),
     month: int = Query(default=None),
 ):
     from datetime import date as dt
     from sqlalchemy import text
+
+    _require_same_user(current_user, user_id)
 
     today = dt.today()
     year = year or today.year
@@ -303,38 +358,30 @@ async def budget_status(
     rows = result.mappings().all()
     return [BudgetStatus(**dict(r)) for r in rows]
 
+
 # ── AI Chat ───────────────────────────────────────────────────
 @app.post("/users/{user_id}/chat", response_model=ChatResponse)
-async def chat(user_id: int, body: ChatRequest, db: DB):
-    """
-    Pass the user's question to the LangChain SQL agent.
-    The agent generates and runs a MySQL SELECT, then answers in plain English.
-    Conversation turns are persisted to ai_conversations for context.
-    """
-    user = await get_user_or_404(user_id, db)
+async def chat(user_id: int, body: ChatRequest, db: DB, current_user: CurrentUser):
+    _require_same_user(current_user, user_id)
+
     settings: Settings = app.state.settings
 
-    # Persist user message
     db.add(AIConversation(user_id=user_id, role="user", content=body.message))
     await db.commit()
 
-    # Inject user_id context so the agent scopes queries correctly
-    question = (
-        f"[user_id={user_id}, name={user.name}] {body.message}"
-    )
+    question = f"[user_id={user_id}, name={current_user.name}] {body.message}"
 
     try:
         agent = build_sql_agent(settings)
         result = agent.invoke({"input": question})
         answer = result.get("output", "I couldn't find an answer to that.")
-        sql_used = result.get("intermediate_steps")   # list of (action, observation)
+        sql_used = result.get("intermediate_steps")
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     except Exception as exc:
         logger.exception("Agent error: %s", exc)
         raise HTTPException(status_code=500, detail="AI agent encountered an error.")
 
-    # Persist assistant reply
     db.add(AIConversation(user_id=user_id, role="assistant", content=answer))
     await db.commit()
 
@@ -346,11 +393,10 @@ async def chat(user_id: int, body: ChatRequest, db: DB):
 
 # ── Insights ──────────────────────────────────────────────────
 @app.get("/users/{user_id}/insights", response_model=list[InsightOut])
-async def get_insights(user_id: int, db: DB):
-    """Run the insight engine and return budget alerts + trend analysis."""
-    await get_user_or_404(user_id, db)
-    settings: Settings = app.state.settings
+async def get_insights(user_id: int, db: DB, current_user: CurrentUser):
+    _require_same_user(current_user, user_id)
 
+    settings: Settings = app.state.settings
     try:
         engine = InsightEngine(settings)
         raw = engine.generate_insights(user_id)
