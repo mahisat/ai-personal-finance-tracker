@@ -7,6 +7,33 @@ from typing import Literal, Optional
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
+# ── Auth ──────────────────────────────────────────────────────
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    name: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def password_byte_length(cls, v: str) -> str:
+        if len(v.encode("utf-8")) > 72:
+            raise ValueError("Password must be 72 bytes or fewer (bcrypt limit)")
+        return v
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user_id: int
+    name: str
+    email: str
+
+
 # ── Users ─────────────────────────────────────────────────────
 class UserCreate(BaseModel):
     email: EmailStr
@@ -23,11 +50,18 @@ class UserOut(BaseModel):
 
 
 # ── Categories ────────────────────────────────────────────────
+class SubCategoryOut(BaseModel):
+    id: int
+    name: str
+    icon: Optional[str] = None
+    model_config = {"from_attributes": True}
+
+
 class CategoryOut(BaseModel):
     id: int
     name: str
     icon: Optional[str] = None
-
+    children: list[SubCategoryOut] = []
     model_config = {"from_attributes": True}
 
 

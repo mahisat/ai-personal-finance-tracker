@@ -1,13 +1,9 @@
 // src/pages/Transactions.tsx
 import { useEffect, useState } from "react";
-import {
-  api,
-  type Category,
-  type Transaction,
-  type TransactionPage,
-} from "../api/client";
+import { api, type Transaction, type TransactionPage } from "../api/client";
 import { useApp } from "../context/AppContext";
 import { Badge, Card, ErrorBanner, Spinner } from "../components/ui";
+import CategorySelect from "../components/CategorySelect";
 
 const EMPTY_FORM = {
   amount: "",
@@ -20,7 +16,6 @@ const EMPTY_FORM = {
 export default function Transactions() {
   const { userId } = useApp();
   const [page, setPage] = useState<TransactionPage | null>(null);
-  const [categories, setCategories] = useState<Category[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [typeFilter, setTypeFilter] = useState("");
   const [loading, setLoading] = useState(true);
@@ -43,13 +38,6 @@ export default function Transactions() {
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   };
-
-  useEffect(() => {
-    api.categories
-      .list()
-      .then(setCategories)
-      .catch(() => {});
-  }, []);
 
   useEffect(() => {
     load();
@@ -101,9 +89,10 @@ export default function Transactions() {
         <h1 className="text-lg font-semibold text-slate-800">Transactions</h1>
         <button
           onClick={() => setShowForm(!showForm)}
-          className="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+          className="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700
+            text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
         >
-          <span>{showForm ? "Cancel" : "+ Add transaction"}</span>
+          {showForm ? "Cancel" : "+ Add transaction"}
         </button>
       </div>
 
@@ -118,7 +107,7 @@ export default function Transactions() {
             onSubmit={handleSubmit}
             className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3"
           >
-            {/* Type toggle */}
+            {/* Income / Expense toggle */}
             <div className="sm:col-span-2 flex gap-2">
               {(["expense", "income"] as const).map((t) => (
                 <button
@@ -141,7 +130,7 @@ export default function Transactions() {
 
             <div className="flex flex-col gap-1">
               <label className="text-xs font-medium text-slate-500">
-                Amount ($)
+                Amount (₹)
               </label>
               <input
                 type="number"
@@ -153,7 +142,8 @@ export default function Transactions() {
                   setForm((f) => ({ ...f, amount: e.target.value }))
                 }
                 placeholder="0.00"
-                className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                className="border border-slate-200 rounded-lg px-3 py-2 text-sm
+                  focus:outline-none focus:ring-2 focus:ring-indigo-300"
               />
             </div>
 
@@ -166,7 +156,8 @@ export default function Transactions() {
                 onChange={(e) =>
                   setForm((f) => ({ ...f, date: e.target.value }))
                 }
-                className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                className="border border-slate-200 rounded-lg px-3 py-2 text-sm
+                  focus:outline-none focus:ring-2 focus:ring-indigo-300"
               />
             </div>
 
@@ -174,20 +165,11 @@ export default function Transactions() {
               <label className="text-xs font-medium text-slate-500">
                 Category
               </label>
-              <select
+              <CategorySelect
                 value={form.category_id}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, category_id: e.target.value }))
-                }
-                className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 bg-white"
-              >
-                <option value="">— None —</option>
-                {categories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
+                onChange={(v) => setForm((f) => ({ ...f, category_id: v }))}
+                className="w-full"
+              />
             </div>
 
             <div className="flex flex-col gap-1">
@@ -202,7 +184,8 @@ export default function Transactions() {
                   setForm((f) => ({ ...f, description: e.target.value }))
                 }
                 placeholder="e.g. Lunch at Café"
-                className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                className="border border-slate-200 rounded-lg px-3 py-2 text-sm
+                  focus:outline-none focus:ring-2 focus:ring-indigo-300"
               />
             </div>
 
@@ -210,7 +193,8 @@ export default function Transactions() {
               <button
                 type="submit"
                 disabled={saving}
-                className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium py-2.5 rounded-lg transition-colors"
+                className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50
+                  text-white text-sm font-medium py-2.5 rounded-lg transition-colors"
               >
                 {saving ? "Saving…" : "Save transaction"}
               </button>
@@ -266,7 +250,7 @@ export default function Transactions() {
                   </div>
                   <div className="flex items-center gap-3 ml-4">
                     <Badge variant={tx.type}>
-                      {tx.type === "income" ? "+" : "−"}$
+                      {tx.type === "income" ? "+" : "−"}₹
                       {Number(tx.amount).toFixed(2)}
                     </Badge>
                     <button
@@ -294,14 +278,16 @@ export default function Transactions() {
             <button
               disabled={currentPage === 1}
               onClick={() => setCurrentPage((p) => p - 1)}
-              className="px-3 py-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="px-3 py-1.5 rounded-lg border border-slate-200 text-slate-500
+                hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Previous
             </button>
             <button
               disabled={currentPage === totalPages}
               onClick={() => setCurrentPage((p) => p + 1)}
-              className="px-3 py-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="px-3 py-1.5 rounded-lg border border-slate-200 text-slate-500
+                hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Next
             </button>

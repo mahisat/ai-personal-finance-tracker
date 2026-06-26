@@ -1,18 +1,13 @@
 // src/pages/Budgets.tsx
 import { useEffect, useState } from "react";
-import {
-  api,
-  type Budget,
-  type BudgetStatus,
-  type Category,
-} from "../api/client";
+import { api, type BudgetStatus } from "../api/client";
 import { useApp } from "../context/AppContext";
 import { Card, ErrorBanner, Spinner } from "../components/ui";
+import CategorySelect from "../components/CategorySelect";
 
 export default function Budgets() {
   const { userId } = useApp();
   const [statuses, setStatuses] = useState<BudgetStatus[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [form, setForm] = useState({ category_id: "", monthly_limit: "" });
@@ -22,11 +17,9 @@ export default function Budgets() {
 
   const load = () => {
     setLoading(true);
-    Promise.all([api.budgets.status(userId), api.categories.list()])
-      .then(([s, c]) => {
-        setStatuses(s);
-        setCategories(c);
-      })
+    api.budgets
+      .status(userId)
+      .then(setStatuses)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   };
@@ -66,6 +59,13 @@ export default function Budgets() {
   const colorFor = (pct: number) =>
     pct >= 100 ? "bg-rose-500" : pct >= 80 ? "bg-amber-400" : "bg-indigo-500";
 
+  const badgeFor = (pct: number) =>
+    pct >= 100
+      ? "bg-rose-100 text-rose-700"
+      : pct >= 80
+        ? "bg-amber-100 text-amber-700"
+        : "bg-indigo-100 text-indigo-700";
+
   return (
     <div className="space-y-6">
       <h1 className="text-lg font-semibold text-slate-800">Budgets</h1>
@@ -85,42 +85,36 @@ export default function Budgets() {
           onSubmit={handleSubmit}
           className="flex flex-col sm:flex-row gap-3 mt-3"
         >
-          <select
+          <CategorySelect
             value={form.category_id}
-            onChange={(e) =>
-              setForm((f) => ({ ...f, category_id: e.target.value }))
-            }
-            className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 bg-white"
-          >
-            <option value="">Select category…</option>
-            {categories.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => setForm((f) => ({ ...f, category_id: v }))}
+            placeholder="Select category…"
+            className="flex-1"
+          />
           <input
             type="number"
             min="1"
             step="0.01"
-            placeholder="Monthly limit ($)"
+            placeholder="Monthly limit (₹)"
             value={form.monthly_limit}
             onChange={(e) =>
               setForm((f) => ({ ...f, monthly_limit: e.target.value }))
             }
-            className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300"
+            className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm
+              focus:outline-none focus:ring-2 focus:ring-indigo-300"
           />
           <button
             type="submit"
             disabled={saving}
-            className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors whitespace-nowrap"
+            className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white
+              text-sm font-medium px-5 py-2 rounded-lg transition-colors whitespace-nowrap"
           >
             {saving ? "Saving…" : "Save budget"}
           </button>
         </form>
       </Card>
 
-      {/* Current budgets */}
+      {/* Budget cards */}
       {error && <ErrorBanner message={error} />}
       {loading ? (
         <Spinner />
@@ -139,14 +133,7 @@ export default function Budgets() {
                   {b.category}
                 </span>
                 <span
-                  className={`text-xs font-semibold px-2 py-0.5 rounded-full
-                  ${
-                    b.percent_used >= 100
-                      ? "bg-rose-100 text-rose-700"
-                      : b.percent_used >= 80
-                        ? "bg-amber-100 text-amber-700"
-                        : "bg-indigo-100 text-indigo-700"
-                  }`}
+                  className={`text-xs font-semibold px-2 py-0.5 rounded-full ${badgeFor(b.percent_used)}`}
                 >
                   {b.percent_used.toFixed(0)}%
                 </span>
@@ -161,13 +148,13 @@ export default function Budgets() {
                 <span>
                   Spent:{" "}
                   <span className="text-slate-600 font-medium">
-                    ${Number(b.spent).toFixed(2)}
+                    ₹{Number(b.spent).toFixed(2)}
                   </span>
                 </span>
                 <span>
                   Limit:{" "}
                   <span className="text-slate-600 font-medium">
-                    ${Number(b.monthly_limit).toFixed(2)}
+                    ₹{Number(b.monthly_limit).toFixed(2)}
                   </span>
                 </span>
                 <span>
@@ -175,7 +162,7 @@ export default function Budgets() {
                   <span
                     className={`font-medium ${Number(b.remaining) < 0 ? "text-rose-600" : "text-emerald-600"}`}
                   >
-                    ${Number(b.remaining).toFixed(2)}
+                    ₹{Number(b.remaining).toFixed(2)}
                   </span>
                 </span>
               </div>

@@ -19,6 +19,10 @@ pydantic-settings==2.2.1
 # Scheduling (nightly insight jobs)
 apscheduler==3.10.4
 
+# Auth — password hashing and JWT
+pwdlib[bcrypt]>=0.2.0
+python-jose[cryptography]==3.3.0
+
 # Misc
 python-dotenv==1.0.1
 

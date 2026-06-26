@@ -12,14 +12,23 @@ class Settings(BaseSettings):
     mysql_port: int = 3306
     mysql_user: str = "finance_user"
     mysql_password: str = ""
+    # Railway exposes MYSQL_DATABASE; local .env can use either name
     mysql_db: str = "finance_tracker"
+    mysql_database: str = ""          # populated by Railway's plugin
 
     openai_api_key: str = ""
     app_secret_key: str = "change_me"
     debug: bool = False
 
+    # Comma-separated list of allowed CORS origins
+    cors_origins: str = "http://localhost:5173"
+
     class Config:
         env_file = ".env"
+
+    @property
+    def effective_db_name(self) -> str:
+        return self.mysql_database or self.mysql_db
 
     # ── Connection URL helpers ────────────────────────────────
     @property
@@ -27,7 +36,7 @@ class Settings(BaseSettings):
         """aiomysql driver — used by FastAPI async routes."""
         return (
             f"mysql+aiomysql://{self.mysql_user}:{self.mysql_password}"
-            f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_db}"
+            f"@{self.mysql_host}:{self.mysql_port}/{self.effective_db_name}"
             f"?charset=utf8mb4"
         )
 
@@ -36,7 +45,7 @@ class Settings(BaseSettings):
         """PyMySQL driver — used by LangChain's SQL toolkit (sync only)."""
         return (
             f"mysql+pymysql://{self.mysql_user}:{self.mysql_password}"
-            f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_db}"
+            f"@{self.mysql_host}:{self.mysql_port}/{self.effective_db_name}"
             f"?charset=utf8mb4"
         )
 
