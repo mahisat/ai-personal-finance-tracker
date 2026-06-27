@@ -18,33 +18,30 @@ _FORBIDDEN = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|REPLACE|GRANT|REVOKE)\b",
     re.IGNORECASE,
 )
+_USER_ID_FILTER = re.compile(r"\buser_id\s*=\s*(\d+)")
+_USER_SCOPED_TABLES = re.compile(r"\b(transactions|budgets)\b", re.IGNORECASE)
 
 
-def _make_safe_db(sync_url: str) -> SQLDatabase:
-    """
-    Build a LangChain SQLDatabase restricted to SELECT queries only.
-    LangChain's SQL toolkit will inspect the schema and run queries
-    through this object — rejecting anything that mutates data.
-    """
+def _make_safe_db(sync_url: str, user_id: int) -> SQLDatabase:
     db = SQLDatabase.from_uri(
         sync_url,
-        include_tables=[
-            "transactions",
-            "categories",
-            "budgets",
-            "users",
-        ],
-        sample_rows_in_table_info=2,   # show the agent a couple of example rows
+        include_tables=["transactions", "categories", "budgets"],
+        sample_rows_in_table_info=2,
     )
 
-    # Monkey-patch run() to block write statements before they hit MySQL
     original_run = db.run
 
     def safe_run(command: str, *args, **kwargs):
         if _FORBIDDEN.search(command):
-            raise PermissionError(
-                "Write operations are not permitted via the AI agent."
-            )
+            raise PermissionError("Write operations are not permitted via the AI agent.")
+
+        if _USER_SCOPED_TABLES.search(command):
+            found_ids = {int(m) for m in _USER_ID_FILTER.findall(command)}
+            if not found_ids or found_ids != {user_id}:
+                raise PermissionError(
+                    f"Queries must be scoped to user_id = {user_id}."
+                )
+
         return original_run(command, *args, **kwargs)
 
     db.run = safe_run
@@ -52,12 +49,8 @@ def _make_safe_db(sync_url: str) -> SQLDatabase:
 
 
 # ── Agent factory ─────────────────────────────────────────────
-def build_sql_agent(settings: Settings):
-    """
-    Returns a LangChain SQL agent wired to MySQL.
-    Call agent.invoke({"input": "..."}) to query it.
-    """
-    db = _make_safe_db(settings.sync_db_url)
+def build_sql_agent(settings: Settings, user_id: int):
+    db = _make_safe_db(settings.sync_db_url, user_id)
 
     llm = ChatOpenAI(
         model="gpt-4o",
@@ -65,21 +58,19 @@ def build_sql_agent(settings: Settings):
         api_key=settings.openai_api_key,
     )
 
-    system_prompt = """
+    system_prompt = f"""
 You are a helpful personal finance assistant with read-only access to a MySQL
-database. The database contains a user's income, expenses, budgets, and
-categories. Answer questions concisely and in plain English. When helpful,
-include specific numbers from the query results. Never speculate about data
-that isn't in the database. If you write SQL, use only SELECT statements.
+database containing one user's financial data. Answer concisely and in plain
+English. Use specific numbers from query results. Never speculate about data
+not in the database. Only write SELECT statements.
 
 Tables available:
 - transactions  (id, user_id, amount, type, category_id, description, date)
 - categories    (id, name, icon)
 - budgets       (id, user_id, category_id, monthly_limit)
-- users         (id, email, name)
 
-Always filter by user_id = {user_id} unless the question is clearly about
-aggregate statistics across all users.
+IMPORTANT: Every query against transactions or budgets MUST include the clause
+WHERE user_id = {user_id}. Queries without this filter will be rejected.
 """
 
     agent = create_sql_agent(

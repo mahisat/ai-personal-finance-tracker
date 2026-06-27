@@ -376,10 +376,10 @@ async def chat(user_id: int, body: ChatRequest, db: DB, current_user: CurrentUse
     db.add(AIConversation(user_id=user_id, role="user", content=body.message))
     await db.commit()
 
-    question = f"[user_id={user_id}, name={current_user.name}] {body.message}"
+    question = body.message
 
     try:
-        agent = build_sql_agent(settings)
+        agent = build_sql_agent(settings, user_id)
         result = agent.invoke({"input": question})
         answer = result.get("output", "I couldn't find an answer to that.")
         sql_used = result.get("intermediate_steps")
