@@ -1,6 +1,6 @@
 // src/pages/Transactions.tsx
 import { useEffect, useState } from "react";
-import { api, type Transaction, type TransactionPage } from "../api/client";
+import { api, type TransactionPage } from "../api/client";
 import { useApp } from "../context/AppContext";
 import { Badge, Card, ErrorBanner, Spinner } from "../components/ui";
 import CategorySelect from "../components/CategorySelect";

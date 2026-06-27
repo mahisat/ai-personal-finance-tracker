@@ -1,5 +1,5 @@
 // src/pages/Login.tsx
-import { useState, FormEvent } from "react";
+import { useState, type SubmitEvent } from "react";
 import { api } from "../api/client";
 import { useApp } from "../context/AppContext";
 
@@ -14,7 +14,7 @@ export default function Login({ onGoToRegister }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  async function handleSubmit(e: FormEvent) {
+  async function handleSubmit(e: SubmitEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
     setLoading(true);

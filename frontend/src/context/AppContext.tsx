@@ -1,5 +1,5 @@
 // src/context/AppContext.tsx
-import { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
 import { setAuthToken } from "../api/client";
 
 interface AuthUser {
