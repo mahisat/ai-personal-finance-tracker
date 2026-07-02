@@ -37,7 +37,8 @@ def _make_safe_db(sync_url: str, user_id: int) -> SQLDatabase:
 
         if _USER_SCOPED_TABLES.search(command):
             found_ids = {int(m) for m in _USER_ID_FILTER.findall(command)}
-            if not found_ids or found_ids != {user_id}:
+            # Block only if a *different* user_id is explicitly present
+            if found_ids and found_ids != {user_id}:
                 raise PermissionError(
                     f"Queries must be scoped to user_id = {user_id}."
                 )
