@@ -27,6 +27,7 @@ export default function Transactions() {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [editingTxId, setEditingTxId] = useState<number | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -54,16 +55,22 @@ export default function Transactions() {
       return;
     }
     setSaving(true);
+    const body = {
+      amount: Number(form.amount),
+      type: form.type,
+      category_id: form.category_id ? Number(form.category_id) : null,
+      description: form.description || null,
+      date: form.date,
+    };
     try {
-      await api.transactions.create(userId, {
-        amount: Number(form.amount),
-        type: form.type,
-        category_id: form.category_id ? Number(form.category_id) : null,
-        description: form.description || null,
-        date: form.date,
-      });
+      if (editingTxId !== null) {
+        await api.transactions.update(userId, editingTxId, body);
+      } else {
+        await api.transactions.create(userId, body);
+      }
       setForm(EMPTY_FORM);
       setShowForm(false);
+      setEditingTxId(null);
       setCurrentPage(1);
       load();
     } catch (e: any) {
@@ -71,6 +78,19 @@ export default function Transactions() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const startEdit = (tx: NonNullable<typeof page>["items"][number]) => {
+    setForm({
+      amount: String(Number(tx.amount).toFixed(2)),
+      type: tx.type,
+      category_id: tx.category ? String(tx.category.id) : "",
+      description: tx.description ?? "",
+      date: tx.date,
+    });
+    setEditingTxId(tx.id);
+    setShowForm(true);
+    setFormError("");
   };
 
   const handleDelete = async (txId: number) => {
@@ -135,7 +155,16 @@ export default function Transactions() {
             onChange={handleImport}
           />
           <button
-            onClick={() => setShowForm(!showForm)}
+            onClick={() => {
+              if (showForm) {
+                setShowForm(false);
+                setEditingTxId(null);
+                setForm(EMPTY_FORM);
+                setFormError("");
+              } else {
+                setShowForm(true);
+              }
+            }}
             className="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700
               text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
           >
@@ -172,7 +201,7 @@ export default function Transactions() {
       {showForm && (
         <Card>
           <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-4">
-            New transaction
+            {editingTxId !== null ? "Edit transaction" : "New transaction"}
           </h2>
           {formError && <ErrorBanner message={formError} />}
           <form
@@ -268,7 +297,7 @@ export default function Transactions() {
                 className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50
                   text-white text-sm font-medium py-2.5 rounded-lg transition-colors"
               >
-                {saving ? "Saving…" : "Save transaction"}
+                {saving ? "Saving…" : editingTxId !== null ? "Update transaction" : "Save transaction"}
               </button>
             </div>
           </form>
@@ -325,6 +354,16 @@ export default function Transactions() {
                       {tx.type === "income" ? "+" : "−"}₹
                       {Number(tx.amount).toFixed(2)}
                     </Badge>
+                    <button
+                      onClick={() => startEdit(tx)}
+                      className="text-slate-300 hover:text-indigo-400 transition-colors"
+                      title="Edit"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+                          d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                      </svg>
+                    </button>
                     <button
                       onClick={() => handleDelete(tx.id)}
                       className="text-slate-300 hover:text-rose-400 transition-colors text-lg leading-none"

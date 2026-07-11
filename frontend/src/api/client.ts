@@ -131,6 +131,11 @@ export const api = {
         method: "POST",
         body: JSON.stringify(body),
       }),
+    update: (userId: number, txId: number, body: object) =>
+      request<Transaction>(`/users/${userId}/transactions/${txId}`, {
+        method: "PUT",
+        body: JSON.stringify(body),
+      }),
     remove: (userId: number, txId: number) =>
       request<void>(`/users/${userId}/transactions/${txId}`, {
         method: "DELETE",

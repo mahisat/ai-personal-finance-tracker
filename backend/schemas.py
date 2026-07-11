@@ -79,6 +79,19 @@ class TransactionCreate(BaseModel):
         return round(v, 2)
 
 
+class TransactionUpdate(BaseModel):
+    amount: Decimal = Field(gt=0, decimal_places=2)
+    type: Literal["income", "expense"]
+    category_id: Optional[int] = None
+    description: Optional[str] = Field(default=None, max_length=500)
+    date: date
+
+    @field_validator("amount")
+    @classmethod
+    def round_amount(cls, v: Decimal) -> Decimal:
+        return round(v, 2)
+
+
 class TransactionOut(BaseModel):
     id: int
     amount: Decimal

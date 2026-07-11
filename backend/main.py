@@ -41,7 +41,7 @@ from schemas import (
     BudgetOut, BudgetStatus, BudgetUpsert,
     CategoryOut, ChatRequest, ChatResponse,
     ImportResult, InsightOut, LoginRequest, RegisterRequest, TokenResponse,
-    TransactionCreate, TransactionOut, TransactionPage,
+    TransactionCreate, TransactionOut, TransactionPage, TransactionUpdate,
     UserCreate, UserOut,
 )
 from ai_agent import InsightEngine, build_sql_agent
@@ -285,6 +285,39 @@ async def delete_transaction(user_id: int, tx_id: int, db: DB, current_user: Cur
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="Transaction not found")
     await db.commit()
+
+
+@app.put(
+    "/users/{user_id}/transactions/{tx_id}",
+    response_model=TransactionOut,
+)
+async def update_transaction(user_id: int, tx_id: int, body: TransactionUpdate, db: DB, current_user: CurrentUser):
+    _require_same_user(current_user, user_id)
+
+    tx = await db.get(Transaction, tx_id)
+    if tx is None or tx.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    tx.amount = body.amount
+    tx.type = body.type
+    tx.category_id = body.category_id
+    tx.description = body.description
+    tx.date = body.date
+    await db.commit()
+
+    result = await db.execute(
+        select(Transaction)
+        .options(
+            selectinload(Transaction.category).options(
+                load_only(Category.id, Category.name, Category.icon, Category.parent_id),
+                selectinload(Category.children).load_only(
+                    Category.id, Category.name, Category.icon
+                ),
+            )
+        )
+        .where(Transaction.id == tx_id)
+    )
+    return result.scalar_one()
 
 
 # ── Budgets ───────────────────────────────────────────────────
