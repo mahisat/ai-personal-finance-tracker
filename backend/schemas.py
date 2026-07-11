@@ -135,3 +135,10 @@ class InsightOut(BaseModel):
     title: str
     body: str
     severity: Literal["info", "warning", "danger"]
+
+
+# ── CSV / Excel import ────────────────────────────────────────
+class ImportResult(BaseModel):
+    imported: int
+    skipped: int
+    errors: list[str]

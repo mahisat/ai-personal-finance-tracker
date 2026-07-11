@@ -1,6 +1,6 @@
 // src/pages/Transactions.tsx
-import { useEffect, useState } from "react";
-import { api, type TransactionPage } from "../api/client";
+import { useEffect, useRef, useState } from "react";
+import { api, type ImportResult, type TransactionPage } from "../api/client";
 import { useApp } from "../context/AppContext";
 import { Badge, Card, ErrorBanner, Spinner } from "../components/ui";
 import CategorySelect from "../components/CategorySelect";
@@ -24,6 +24,9 @@ export default function Transactions() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
   const [showForm, setShowForm] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const load = () => {
     setLoading(true);
@@ -80,21 +83,90 @@ export default function Transactions() {
     }
   };
 
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    setImportResult(null);
+    try {
+      const result = await api.import.upload(userId, file);
+      setImportResult(result);
+      if (result.imported > 0) {
+        setCurrentPage(1);
+        load();
+      }
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setImporting(false);
+      e.target.value = "";
+    }
+  };
+
   const totalPages = page ? Math.ceil(page.total / page.page_size) : 1;
 
   return (
     <div className="space-y-5">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <h1 className="text-lg font-semibold text-slate-800">Transactions</h1>
-        <button
-          onClick={() => setShowForm(!showForm)}
-          className="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700
-            text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
-        >
-          {showForm ? "Cancel" : "+ Add transaction"}
-        </button>
+        <div className="flex items-center gap-2">
+          <a
+            href={api.import.templateUrl()}
+            download="expense_template.xlsx"
+            className="inline-flex items-center gap-1.5 border border-slate-200 text-slate-600
+              hover:bg-slate-50 text-sm font-medium px-3 py-2 rounded-lg transition-colors"
+          >
+            Download template
+          </a>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
+            className="inline-flex items-center gap-1.5 border border-indigo-200 text-indigo-600
+              hover:bg-indigo-50 text-sm font-medium px-3 py-2 rounded-lg transition-colors disabled:opacity-50"
+          >
+            {importing ? "Importing…" : "Import CSV / Excel"}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,.xlsx"
+            className="hidden"
+            onChange={handleImport}
+          />
+          <button
+            onClick={() => setShowForm(!showForm)}
+            className="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700
+              text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+          >
+            {showForm ? "Cancel" : "+ Add"}
+          </button>
+        </div>
       </div>
+
+      {/* Import result */}
+      {importResult && (
+        <div className={`rounded-xl border px-4 py-3 text-sm ${
+          importResult.errors.length > 0
+            ? "bg-amber-50 border-amber-200 text-amber-800"
+            : "bg-emerald-50 border-emerald-200 text-emerald-800"
+        }`}>
+          <div className="flex items-center justify-between">
+            <span>
+              Imported <strong>{importResult.imported}</strong> rows,
+              skipped <strong>{importResult.skipped}</strong> duplicates
+              {importResult.errors.length > 0 && `, ${importResult.errors.length} error(s)`}
+            </span>
+            <button onClick={() => setImportResult(null)} className="ml-4 opacity-60 hover:opacity-100">×</button>
+          </div>
+          {importResult.errors.length > 0 && (
+            <ul className="mt-2 space-y-0.5 text-xs list-disc list-inside opacity-80">
+              {importResult.errors.slice(0, 5).map((e, i) => <li key={i}>{e}</li>)}
+              {importResult.errors.length > 5 && <li>…and {importResult.errors.length - 5} more</li>}
+            </ul>
+          )}
+        </div>
+      )}
 
       {/* Add form */}
       {showForm && (
