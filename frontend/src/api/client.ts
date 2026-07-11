@@ -98,6 +98,12 @@ export interface ChatResponse {
   sql_used?: string;
 }
 
+export interface ImportResult {
+  imported: number;
+  skipped: number;
+  errors: string[];
+}
+
 // ── API calls ──────────────────────────────────────────────────
 export const api = {
   auth: {
@@ -125,6 +131,11 @@ export const api = {
         method: "POST",
         body: JSON.stringify(body),
       }),
+    update: (userId: number, txId: number, body: object) =>
+      request<Transaction>(`/users/${userId}/transactions/${txId}`, {
+        method: "PUT",
+        body: JSON.stringify(body),
+      }),
     remove: (userId: number, txId: number) =>
       request<void>(`/users/${userId}/transactions/${txId}`, {
         method: "DELETE",
@@ -148,5 +159,22 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ message }),
       }),
+  },
+  import: {
+    upload: async (userId: number, file: File): Promise<ImportResult> => {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch(`${BASE}/users/${userId}/import`, {
+        method: "POST",
+        headers: _token ? { Authorization: `Bearer ${_token}` } : {},
+        body: form,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail ?? "Import failed");
+      }
+      return res.json();
+    },
+    templateUrl: () => `${BASE}/templates/import`,
   },
 };

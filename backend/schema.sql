@@ -158,3 +158,7 @@ CREATE TABLE IF NOT EXISTS ai_conversations (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   INDEX idx_user_conv (user_id, created_at)
 );
+
+ALTER TABLE transactions
+  ADD COLUMN import_hash VARCHAR(64) NULL,
+  ADD INDEX idx_import_hash (import_hash);

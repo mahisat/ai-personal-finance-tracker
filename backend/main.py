@@ -5,6 +5,7 @@ Endpoints:
   POST   /auth/login
   GET    /users/me
   GET    /categories
+  GET    /templates/import
   POST   /users/{user_id}/transactions
   GET    /users/{user_id}/transactions
   DELETE /users/{user_id}/transactions/{tx_id}
@@ -12,15 +13,22 @@ Endpoints:
   GET    /users/{user_id}/budgets/status
   POST   /users/{user_id}/chat
   GET    /users/{user_id}/insights
+  POST   /users/{user_id}/import
 """
+import csv
+import hashlib
+import io
 import logging
+import re
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Annotated, Optional
-from fastapi import Request
+from fastapi import File, Request, UploadFile
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import func, select, delete, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,8 +40,8 @@ from models import AIConversation, Base, Budget, Category, Transaction, User
 from schemas import (
     BudgetOut, BudgetStatus, BudgetUpsert,
     CategoryOut, ChatRequest, ChatResponse,
-    InsightOut, LoginRequest, RegisterRequest, TokenResponse,
-    TransactionCreate, TransactionOut, TransactionPage,
+    ImportResult, InsightOut, LoginRequest, RegisterRequest, TokenResponse,
+    TransactionCreate, TransactionOut, TransactionPage, TransactionUpdate,
     UserCreate, UserOut,
 )
 from ai_agent import InsightEngine, build_sql_agent
@@ -75,6 +83,7 @@ origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=r"http://localhost:\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -278,6 +287,39 @@ async def delete_transaction(user_id: int, tx_id: int, db: DB, current_user: Cur
     await db.commit()
 
 
+@app.put(
+    "/users/{user_id}/transactions/{tx_id}",
+    response_model=TransactionOut,
+)
+async def update_transaction(user_id: int, tx_id: int, body: TransactionUpdate, db: DB, current_user: CurrentUser):
+    _require_same_user(current_user, user_id)
+
+    tx = await db.get(Transaction, tx_id)
+    if tx is None or tx.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    tx.amount = body.amount
+    tx.type = body.type
+    tx.category_id = body.category_id
+    tx.description = body.description
+    tx.date = body.date
+    await db.commit()
+
+    result = await db.execute(
+        select(Transaction)
+        .options(
+            selectinload(Transaction.category).options(
+                load_only(Category.id, Category.name, Category.icon, Category.parent_id),
+                selectinload(Category.children).load_only(
+                    Category.id, Category.name, Category.icon
+                ),
+            )
+        )
+        .where(Transaction.id == tx_id)
+    )
+    return result.scalar_one()
+
+
 # ── Budgets ───────────────────────────────────────────────────
 @app.put(
     "/users/{user_id}/budgets",
@@ -418,3 +460,274 @@ async def get_insights(user_id: int, db: DB, current_user: CurrentUser):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# ── Import helpers ────────────────────────────────────────────
+def _to_range_name(cat_name: str) -> str:
+    """Sanitise a category name into a valid Excel named-range identifier."""
+    name = re.sub(r"[^A-Za-z0-9]", "_", cat_name)
+    name = re.sub(r"_+", "_", name)
+    return name.strip("_")
+
+
+def _parse_date(raw: str) -> date:
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y", "%d-%b-%Y"):
+        try:
+            return datetime.strptime(raw.strip(), fmt).date()
+        except ValueError:
+            pass
+    raise ValueError(f"Unrecognised date format: '{raw}'")
+
+
+def _row_hash(user_id: int, tx_date: date, tx_type: str,
+              amount: Decimal, category_id: Optional[int], description: str) -> str:
+    raw = f"{user_id}|{tx_date}|{tx_type}|{amount}|{category_id}|{description}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _parse_csv_bytes(content: bytes) -> list[dict]:
+    text_content = content.decode("utf-8-sig")   # strips BOM if present
+    reader = csv.DictReader(io.StringIO(text_content))
+    return [
+        {k.strip().lower(): v.strip() for k, v in row.items()}
+        for row in reader
+    ]
+
+
+def _parse_xlsx_bytes(content: bytes) -> list[dict]:
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(content), data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return []
+    headers = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
+    result = []
+    for row in rows[1:]:
+        if all(v is None for v in row):
+            continue
+        result.append({headers[i]: (str(v).strip() if v is not None else "") for i, v in enumerate(row)})
+    return result
+
+
+def _build_import_template(categories: list[dict]) -> bytes:
+    """Build and return the Excel import template as raw bytes."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    from openpyxl.workbook.defined_name import DefinedName
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    wb = Workbook()
+
+    # ── Hidden Lists sheet ────────────────────────────────────
+    lists_ws = wb.active
+    lists_ws.title = "Lists"
+    lists_ws.sheet_state = "hidden"
+
+    cat_names = [c["name"] for c in categories]
+    for i, name in enumerate(cat_names, start=1):
+        lists_ws.cell(row=i, column=1, value=name)
+
+    # One column per parent: subcategory values + a named range
+    for col_idx, cat in enumerate(categories, start=2):
+        subcats = [ch["name"] for ch in cat.get("children", [])]
+        for row_idx, sub in enumerate(subcats, start=1):
+            lists_ws.cell(row=row_idx, column=col_idx, value=sub)
+
+        range_name = _to_range_name(cat["name"])
+        col_letter = get_column_letter(col_idx)
+        ref = f"Lists!${col_letter}$1:${col_letter}${len(subcats)}"
+        wb.defined_names[range_name] = DefinedName(name=range_name, attr_text=ref)
+
+    # Named range for all parent categories
+    cat_ref = f"Lists!$A$1:$A${len(cat_names)}"
+    wb.defined_names["AllCategories"] = DefinedName("AllCategories", attr_text=cat_ref)
+
+    # ── Transactions sheet ────────────────────────────────────
+    tx_ws = wb.create_sheet("Transactions", 0)
+    wb.active = tx_ws
+
+    headers = ["Date", "Type", "Amount (₹)", "Category", "Subcategory", "Description"]
+    hdr_fill = PatternFill(start_color="4F46E5", end_color="4F46E5", fill_type="solid")
+    hdr_font = Font(bold=True, color="FFFFFF", size=11)
+
+    for col, header in enumerate(headers, start=1):
+        cell = tx_ws.cell(row=1, column=col, value=header)
+        cell.fill = hdr_fill
+        cell.font = hdr_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    for col, width in enumerate([13, 10, 13, 22, 22, 36], start=1):
+        tx_ws.column_dimensions[get_column_letter(col)].width = width
+    tx_ws.row_dimensions[1].height = 26
+    tx_ws.freeze_panes = "A2"
+
+    MAX = 1001  # data validation covers rows 2–1001
+
+    # Type dropdown
+    dv_type = DataValidation(type="list", formula1='"Income,Expense"', showDropDown=False)
+    dv_type.error = "Choose Income or Expense"
+    dv_type.errorTitle = "Invalid type"
+    tx_ws.add_data_validation(dv_type)
+    dv_type.add(f"B2:B{MAX}")
+
+    # Category dropdown → AllCategories named range
+    dv_cat = DataValidation(type="list", formula1="=AllCategories", showDropDown=False)
+    dv_cat.error = "Choose a category from the list"
+    dv_cat.errorTitle = "Invalid category"
+    tx_ws.add_data_validation(dv_cat)
+    dv_cat.add(f"D2:D{MAX}")
+
+    # Subcategory dropdown → INDIRECT(sanitised category name)
+    # Formula converts "Bills & Utilities" → "Bills_Utilities" to match the named range
+    indirect_formula = (
+        '=INDIRECT(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(D2," ","_"),"&",""),"__","_"))'
+    )
+    dv_sub = DataValidation(type="list", formula1=indirect_formula, showDropDown=False, showErrorMessage=False)
+    tx_ws.add_data_validation(dv_sub)
+    dv_sub.add(f"E2:E{MAX}")
+
+    # Sample row
+    sample_date = date.today().strftime("%Y-%m-%d")
+    for col, val in enumerate(
+        [sample_date, "Expense", 500.00, "Daily Expenses", "Groceries", "Weekly grocery shopping"],
+        start=1,
+    ):
+        tx_ws.cell(row=2, column=col, value=val)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+# ── Excel template download (public) ─────────────────────────
+@app.get("/templates/import")
+async def download_import_template(db: DB):
+    result = await db.execute(
+        select(Category)
+        .where(Category.parent_id.is_(None))
+        .options(selectinload(Category.children))
+        .order_by(Category.name)
+    )
+    parents = result.scalars().all()
+    categories = [
+        {
+            "name": p.name,
+            "children": sorted(
+                [{"name": c.name} for c in p.children], key=lambda x: x["name"]
+            ),
+        }
+        for p in parents
+    ]
+    content = _build_import_template(categories)
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="expense_template.xlsx"'},
+    )
+
+
+# ── CSV / XLSX import ─────────────────────────────────────────
+@app.post("/users/{user_id}/import", response_model=ImportResult)
+async def import_transactions(
+    user_id: int,
+    db: DB,
+    current_user: CurrentUser,
+    file: UploadFile = File(...),
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
+):
+    _require_same_user(current_user, user_id)
+
+    content = await file.read()
+    filename = (file.filename or "").lower()
+
+    try:
+        if filename.endswith(".xlsx") or filename.endswith(".xls"):
+            rows = _parse_xlsx_bytes(content)
+        else:
+            rows = _parse_csv_bytes(content)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
+
+    # Build case-insensitive category name → id lookup
+    cat_result = await db.execute(
+        select(Category).options(selectinload(Category.children))
+    )
+    cat_by_name: dict[str, int] = {}
+    for cat in cat_result.scalars().all():
+        cat_by_name[cat.name.lower()] = cat.id
+        for child in cat.children:
+            cat_by_name[child.name.lower()] = child.id
+
+    imported = 0
+    skipped = 0
+    errors: list[str] = []
+
+    for row_num, row in enumerate(rows, start=2):
+        try:
+            raw_date = row.get("date", "").strip()
+            if not raw_date:
+                skipped += 1
+                continue
+            tx_date = _parse_date(raw_date)
+
+            if from_date and tx_date < from_date:
+                skipped += 1
+                continue
+            if to_date and tx_date > to_date:
+                skipped += 1
+                continue
+
+            tx_type = row.get("type", "").strip().lower()
+            if tx_type not in ("income", "expense"):
+                errors.append(f"Row {row_num}: invalid type '{tx_type}' (must be Income or Expense)")
+                continue
+
+            raw_amount = row.get("amount (₹)", "") or row.get("amount", "")
+            try:
+                amount = Decimal(str(raw_amount)).quantize(Decimal("0.01"))
+                if amount <= 0:
+                    raise ValueError
+            except (InvalidOperation, ValueError):
+                errors.append(f"Row {row_num}: invalid amount '{raw_amount}'")
+                continue
+
+            description = (row.get("description", "") or "").strip() or None
+
+            # Resolve category — try subcategory first, then parent category
+            category_id: Optional[int] = None
+            sub = (row.get("subcategory", "") or "").strip().lower()
+            cat = (row.get("category", "") or "").strip().lower()
+            if sub and sub in cat_by_name:
+                category_id = cat_by_name[sub]
+            elif cat and cat in cat_by_name:
+                category_id = cat_by_name[cat]
+
+            h = _row_hash(user_id, tx_date, tx_type, amount, category_id, description or "")
+
+            exists = await db.execute(
+                select(Transaction.id).where(Transaction.import_hash == h)
+            )
+            if exists.scalar_one_or_none() is not None:
+                skipped += 1
+                continue
+
+            db.add(Transaction(
+                user_id=user_id,
+                amount=amount,
+                type=tx_type,
+                category_id=category_id,
+                description=description,
+                date=tx_date,
+                import_hash=h,
+            ))
+            imported += 1
+
+        except Exception as exc:
+            errors.append(f"Row {row_num}: {exc}")
+
+    await db.commit()
+    return ImportResult(imported=imported, skipped=skipped, errors=errors)
