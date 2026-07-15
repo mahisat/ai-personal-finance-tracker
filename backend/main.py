@@ -471,7 +471,7 @@ def _to_range_name(cat_name: str) -> str:
 
 
 def _parse_date(raw: str) -> date:
-    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y", "%d-%b-%Y"):
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y", "%d-%b-%Y", "%d-%b-%Y %H:%M:%S"):
         try:
             return datetime.strptime(raw.strip(), fmt).date()
         except ValueError:
