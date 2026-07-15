@@ -510,84 +510,137 @@ def _parse_xlsx_bytes(content: bytes) -> list[dict]:
     return result
 
 
+def _sanitize_defined_name(name: str) -> str:
+    """
+    Turn a category display name into a valid Excel/Google Sheets defined-name.
+    Rules: letters, numbers, underscores only; cannot start with a number;
+    cannot collide with a cell reference (e.g. "A1"); max 255 chars.
+    """
+    cleaned = re.sub(r"[^A-Za-z0-9_]", "_", name.strip())
+    if not cleaned or cleaned[0].isdigit():
+        cleaned = f"_{cleaned}"
+    return cleaned[:255]
+ 
+ 
 def _build_import_template(categories: list[dict]) -> bytes:
     """Build and return the Excel import template as raw bytes."""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
-    from openpyxl.workbook.defined_name import DefinedName
     from openpyxl.worksheet.datavalidation import DataValidation
-
+    from openpyxl.workbook.defined_name import DefinedName
+ 
     wb = Workbook()
-
-    # ── Hidden Lists sheet ────────────────────────────────────
+ 
+    # ── Hidden Lists sheet ──────────────────────────────────────
+    # Column A: parent category display names → category DV (direct range).
+    # Columns C+ : one column per category holding its subcategory names.
+    # Each of those columns gets a NAMED RANGE (sanitized category name),
+    # which is the standard, reliable pattern for dependent dropdowns —
+    # =INDIRECT(D2) on the Subcategory column resolves the category cell's
+    # own text to a defined name, no helper-column CHOOSE/MATCH formula
+    # needed, and it correctly varies per row because D2 IS the row.
     lists_ws = wb.active
     lists_ws.title = "Lists"
     lists_ws.sheet_state = "hidden"
-
+ 
     cat_names = [c["name"] for c in categories]
+    n_cats = len(cat_names)
     for i, name in enumerate(cat_names, start=1):
         lists_ws.cell(row=i, column=1, value=name)
-
-    # One column per parent: subcategory values + a named range
-    for col_idx, cat in enumerate(categories, start=2):
-        subcats = [ch["name"] for ch in cat.get("children", [])]
-        for row_idx, sub in enumerate(subcats, start=1):
-            lists_ws.cell(row=row_idx, column=col_idx, value=sub)
-
-        range_name = _to_range_name(cat["name"])
-        col_letter = get_column_letter(col_idx)
-        ref = f"Lists!${col_letter}$1:${col_letter}${len(subcats)}"
-        wb.defined_names[range_name] = DefinedName(name=range_name, attr_text=ref)
-
-    # Named range for all parent categories
-    cat_ref = f"Lists!$A$1:$A${len(cat_names)}"
-    wb.defined_names["AllCategories"] = DefinedName("AllCategories", attr_text=cat_ref)
-
-    # ── Transactions sheet ────────────────────────────────────
+ 
+    # ── Transactions sheet ──────────────────────────────────────
     tx_ws = wb.create_sheet("Transactions", 0)
     wb.active = tx_ws
-
+ 
+    # Visible user columns A–F
     headers = ["Date", "Type", "Amount (₹)", "Category", "Subcategory", "Description"]
     hdr_fill = PatternFill(start_color="4F46E5", end_color="4F46E5", fill_type="solid")
     hdr_font = Font(bold=True, color="FFFFFF", size=11)
-
     for col, header in enumerate(headers, start=1):
         cell = tx_ws.cell(row=1, column=col, value=header)
         cell.fill = hdr_fill
         cell.font = hdr_font
         cell.alignment = Alignment(horizontal="center", vertical="center")
-
+ 
     for col, width in enumerate([13, 10, 13, 22, 22, 36], start=1):
         tx_ws.column_dimensions[get_column_letter(col)].width = width
     tx_ws.row_dimensions[1].height = 26
     tx_ws.freeze_panes = "A2"
-
-    MAX = 1001  # data validation covers rows 2–1001
-
-    # Type dropdown
+ 
+    # ── Subcategory lists + named ranges (on the hidden Lists sheet) ──
+    # Column layout: C, D, E, ... one column per category with subcats.
+    # Column B holds a lookup table: category display name -> sanitized
+    # defined-name token, in the SAME row order as column A. This avoids
+    # replicating sanitization logic as an ad-hoc SUBSTITUTE chain inside
+    # the DV formula (that chain only handled space/"&" and would silently
+    # break on any other character, e.g. "/", "-", "."). INDEX/MATCH looks
+    # the token up instead of re-deriving it, so it can never drift out of
+    # sync with what _sanitize_defined_name actually produced.
+    SUBCAT_START_COL = 3  # column C
+    used_names: set[str] = set()
+ 
+    for i, (name, cat) in enumerate(zip(cat_names, categories), start=1):
+        token = _sanitize_defined_name(name)
+        # Guarantee uniqueness even if two categories sanitize to the same token.
+        base_token, suffix = token, 2
+        while token in used_names:
+            token = f"{base_token}_{suffix}"
+            suffix += 1
+        used_names.add(token)
+        lists_ws.cell(row=i, column=2, value=token)
+ 
+        subcats = [ch["name"] for ch in cat.get("children", [])]
+        if not subcats:
+            continue
+        col_num = SUBCAT_START_COL + (i - 1)
+        col_letter = get_column_letter(col_num)
+        for row_i, sub in enumerate(subcats, start=1):
+            lists_ws.cell(row=row_i, column=col_num, value=sub)
+ 
+        ref = f"Lists!${col_letter}$1:${col_letter}${len(subcats)}"
+        wb.defined_names[token] = DefinedName(token, attr_text=ref)
+ 
+    # ── Data validation ─────────────────────────────────────────
+    MAX = 1001
+ 
+    # Type: string literal (works everywhere)
     dv_type = DataValidation(type="list", formula1='"Income,Expense"', showDropDown=False)
     dv_type.error = "Choose Income or Expense"
     dv_type.errorTitle = "Invalid type"
     tx_ws.add_data_validation(dv_type)
     dv_type.add(f"B2:B{MAX}")
-
-    # Category dropdown → AllCategories named range
-    dv_cat = DataValidation(type="list", formula1="=AllCategories", showDropDown=False)
+ 
+    # Category: direct static range (confirmed working in Excel + Google Sheets)
+    dv_cat = DataValidation(
+        type="list",
+        formula1=f"Lists!$A$1:$A${n_cats}",
+        showDropDown=False,
+    )
     dv_cat.error = "Choose a category from the list"
     dv_cat.errorTitle = "Invalid category"
     tx_ws.add_data_validation(dv_cat)
     dv_cat.add(f"D2:D{MAX}")
-
-    # Subcategory dropdown → INDIRECT(sanitised category name)
-    # Formula converts "Bills & Utilities" → "Bills_Utilities" to match the named range
-    indirect_formula = (
-        '=INDIRECT(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(D2," ","_"),"&",""),"__","_"))'
+ 
+    # Subcategory: INDIRECT(INDEX(Lists!$B:$B, MATCH(D2, Lists!$A:$A, 0)))
+    # D2 is the category cell IN THE SAME ROW as this validation's target
+    # cell (E2), so this correctly varies per row: each row's own D cell
+    # drives its own E cell's list. MATCH finds which row of Lists!A holds
+    # D2's display text, INDEX pulls that row's token from Lists!B, and
+    # INDIRECT resolves the token to its named range. This looks the token
+    # up rather than re-deriving it with string replacement, so it always
+    # matches exactly what _sanitize_defined_name produced when the
+    # workbook was built — regardless of what characters a category name
+    # contains.
+    dv_sub = DataValidation(
+        type="list",
+        formula1='INDIRECT(INDEX(Lists!$B:$B,MATCH(D2,Lists!$A:$A,0)))',
+        showDropDown=False,
+        showErrorMessage=False,
     )
-    dv_sub = DataValidation(type="list", formula1=indirect_formula, showDropDown=False, showErrorMessage=False)
     tx_ws.add_data_validation(dv_sub)
     dv_sub.add(f"E2:E{MAX}")
-
+ 
     # Sample row
     sample_date = date.today().strftime("%Y-%m-%d")
     for col, val in enumerate(
@@ -595,12 +648,41 @@ def _build_import_template(categories: list[dict]) -> bytes:
         start=1,
     ):
         tx_ws.cell(row=2, column=col, value=val)
-
+ 
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
     return buf.read()
-
+ 
+ 
+if __name__ == "__main__":
+    categories = [
+        {"name": "Bills & Utilities", "children": [{"name": n} for n in
+            ["Electricity", "Water", "Internet", "Mobile", "Gas", "Cable"]]},
+        {"name": "Daily Expenses", "children": [{"name": n} for n in
+            ["Groceries", "Dining Out", "Transport", "Fuel", "Snacks", "Coffee", "Misc"]]},
+        {"name": "EMI & Loans", "children": [{"name": n} for n in
+            ["Home Loan", "Car Loan", "Personal Loan", "Credit Card", "Education Loan", "Other EMI"]]},
+        {"name": "Family & Home", "children": [{"name": n} for n in
+            ["Rent", "Maintenance", "Furniture", "Repairs", "Domestic Help"]]},
+        {"name": "Income", "children": [{"name": n} for n in
+            ["Salary", "Freelance", "Business", "Interest", "Dividends", "Rental Income", "Other"]]},
+        {"name": "Insurance", "children": [{"name": n} for n in
+            ["Life", "Health", "Vehicle", "Home"]]},
+        {"name": "Investments", "children": [{"name": n} for n in
+            ["Stocks", "Mutual Funds", "Fixed Deposit", "PPF", "Gold", "Crypto", "Real Estate"]]},
+        {"name": "Occasions", "children": [{"name": n} for n in
+            ["Gifts", "Celebrations", "Travel", "Weddings", "Festivals"]]},
+        {"name": "Other", "children": [{"name": n} for n in
+            ["Miscellaneous", "Uncategorized", "Charity", "Fees", "Refund", "Adjustment"]]},
+        {"name": "Food/Dining - Misc.", "children": [{"name": n} for n in
+            ["Takeout", "Dine-In"]]},
+    ]
+    data = _build_import_template(categories)
+    with open("/home/claude/import_template.xlsx", "wb") as f:
+        f.write(data)
+    print("written", len(data), "bytes")
+ 
 
 # ── Excel template download (public) ─────────────────────────
 @app.get("/templates/import")
