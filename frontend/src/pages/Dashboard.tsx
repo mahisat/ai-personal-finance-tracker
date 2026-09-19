@@ -8,6 +8,7 @@ import {
 } from "../api/client";
 import { useApp } from "../context/AppContext";
 import { Card, Badge, Spinner, ErrorBanner } from "../components/ui";
+import { SpendingByCategoryCharts } from "../components/charts/SpendingByCategoryCharts";
 
 function MetricCard({
   label,
@@ -167,6 +168,11 @@ export default function Dashboard() {
           )}
         </Card>
       </div>
+
+      <SpendingByCategoryCharts
+        userId={userId}
+        periodLabel="This month"
+      />
 
       {/* Recent transactions */}
       <Card>

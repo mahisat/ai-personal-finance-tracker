@@ -104,6 +104,13 @@ export interface ImportResult {
   errors: string[];
 }
 
+export interface CategorySpending {
+  category: string;
+  category_id: number | null;
+  total: string;
+  percent: number;
+}
+
 // ── API calls ──────────────────────────────────────────────────
 export const api = {
   auth: {
@@ -152,6 +159,17 @@ export const api = {
   },
   insights: {
     list: (userId: number) => request<Insight[]>(`/users/${userId}/insights`),
+  },
+  analytics: {
+    spendingByCategory: (
+      userId: number,
+      params?: Record<string, string>
+    ) => {
+      const q = params ? "?" + new URLSearchParams(params).toString() : "";
+      return request<CategorySpending[]>(
+        `/users/${userId}/analytics/spending-by-category${q}`
+      );
+    },
   },
   chat: {
     ask: (userId: number, message: string) =>

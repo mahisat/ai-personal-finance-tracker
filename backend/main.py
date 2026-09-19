@@ -13,6 +13,7 @@ Endpoints:
   GET    /users/{user_id}/budgets/status
   POST   /users/{user_id}/chat
   GET    /users/{user_id}/insights
+  GET    /users/{user_id}/analytics/spending-by-category
   POST   /users/{user_id}/import
 """
 import csv
@@ -39,7 +40,9 @@ from config import Settings, build_async_engine, build_session_factory, get_sett
 from models import AIConversation, Base, Budget, Category, Transaction, User
 from schemas import (
     BudgetOut, BudgetStatus, BudgetUpsert,
-    CategoryOut, ChatRequest, ChatResponse,
+    CategoryOut,
+    CategorySpendingOut,
+    ChatRequest, ChatResponse,
     ImportResult, InsightOut, LoginRequest, RegisterRequest, TokenResponse,
     TransactionCreate, TransactionOut, TransactionPage, TransactionUpdate,
     UserCreate, UserOut,
@@ -440,6 +443,76 @@ async def chat(user_id: int, body: ChatRequest, db: DB, current_user: CurrentUse
     )
 
 
+# ── Analytics ─────────────────────────────────────────────────
+@app.get(
+    "/users/{user_id}/analytics/spending-by-category",
+    response_model=list[CategorySpendingOut],
+)
+async def spending_by_category(
+    user_id: int,
+    db: DB,
+    current_user: CurrentUser,
+    year: int = Query(default=None),
+    month: int = Query(default=None, ge=1, le=12),
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
+):
+    """Expense totals grouped by top-level category for charting."""
+    from datetime import date as dt
+
+    _require_same_user(current_user, user_id)
+
+    today = dt.today()
+    params: dict = {"user_id": user_id}
+
+    date_clause = ""
+    if from_date or to_date:
+        if from_date:
+            date_clause += " AND t.date >= :from_date"
+            params["from_date"] = from_date
+        if to_date:
+            date_clause += " AND t.date <= :to_date"
+            params["to_date"] = to_date
+    else:
+        year = year or today.year
+        month = month or today.month
+        date_clause = " AND YEAR(t.date) = :year AND MONTH(t.date) = :month"
+        params["year"] = year
+        params["month"] = month
+
+    result = await db.execute(
+        text(f"""
+            SELECT
+                COALESCE(parent_cat.name, cat.name, 'Uncategorised') AS category,
+                COALESCE(parent_cat.id, cat.id)                     AS category_id,
+                COALESCE(SUM(t.amount), 0)                            AS total
+            FROM transactions t
+            LEFT JOIN categories cat ON cat.id = t.category_id
+            LEFT JOIN categories parent_cat ON parent_cat.id = cat.parent_id
+            WHERE t.user_id = :user_id
+              AND t.type = 'expense'
+              {date_clause}
+            GROUP BY
+                COALESCE(parent_cat.name, cat.name, 'Uncategorised'),
+                COALESCE(parent_cat.id, cat.id)
+            HAVING total > 0
+            ORDER BY total DESC
+        """),
+        params,
+    )
+    rows = [dict(r) for r in result.mappings().all()]
+    grand = sum(float(r["total"]) for r in rows)
+    return [
+        CategorySpendingOut(
+            category=r["category"],
+            category_id=r["category_id"],
+            total=r["total"],
+            percent=round(float(r["total"]) / grand * 100, 1) if grand else 0.0,
+        )
+        for r in rows
+    ]
+
+
 # ── Insights ──────────────────────────────────────────────────
 @app.get("/users/{user_id}/insights", response_model=list[InsightOut])
 async def get_insights(user_id: int, db: DB, current_user: CurrentUser):
@@ -458,8 +531,13 @@ async def get_insights(user_id: int, db: DB, current_user: CurrentUser):
 
 # ── Health check ──────────────────────────────────────────────
 @app.get("/health")
-async def health():
-    return {"status": "ok"}
+async def health(db: DB):
+    try:
+        await db.execute(text("SELECT 1"))
+        db_status = "connected"
+    except Exception as e:
+        db_status = f"error: {e}"
+    return {"status": "ok", "db": db_status}
 
 
 # ── Import helpers ────────────────────────────────────────────
