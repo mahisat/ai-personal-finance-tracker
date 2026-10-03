@@ -8,6 +8,7 @@ Endpoints:
   GET    /templates/import
   POST   /users/{user_id}/transactions
   GET    /users/{user_id}/transactions
+  GET    /users/{user_id}/transactions/export
   DELETE /users/{user_id}/transactions/{tx_id}
   PUT    /users/{user_id}/budgets
   GET    /users/{user_id}/budgets/status
@@ -269,6 +270,86 @@ async def list_transactions(
         page=page,
         page_size=page_size,
         items=rows.scalars().all(),
+    )
+
+
+IMPORT_CSV_HEADERS = [
+    "Date",
+    "Type",
+    "Amount (₹)",
+    "Category",
+    "Subcategory",
+    "Description",
+]
+
+
+def _import_category_columns(cat: Optional[Category]) -> tuple[str, str]:
+    """Map stored category to template Category / Subcategory columns."""
+    if cat is None:
+        return "", ""
+    if cat.parent_id is not None and cat.parent is not None:
+        return cat.parent.name, cat.name
+    return cat.name, ""
+
+
+def _transactions_to_import_csv(transactions: list[Transaction]) -> bytes:
+    buf = io.StringIO()
+    buf.write("\ufeff")  # UTF-8 BOM for Excel / Google Sheets
+    writer = csv.writer(buf, lineterminator="\r\n")
+    writer.writerow(IMPORT_CSV_HEADERS)
+    for tx in transactions:
+        parent_cat, sub_cat = _import_category_columns(tx.category)
+        tx_type = "Income" if tx.type == "income" else "Expense"
+        amount = f"{Decimal(tx.amount).quantize(Decimal('0.01')):.2f}"
+        writer.writerow(
+            [
+                tx.date.isoformat(),
+                tx_type,
+                amount,
+                parent_cat,
+                sub_cat,
+                tx.description or "",
+            ]
+        )
+    return buf.getvalue().encode("utf-8")
+
+
+@app.get("/users/{user_id}/transactions/export")
+async def export_transactions_csv(
+    user_id: int,
+    db: DB,
+    current_user: CurrentUser,
+    type: Optional[str] = Query(None, pattern="^(income|expense)$"),
+    category_id: Optional[int] = None,
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
+):
+    _require_same_user(current_user, user_id)
+
+    q = (
+        select(Transaction)
+        .options(
+            selectinload(Transaction.category).selectinload(Category.parent),
+        )
+        .where(Transaction.user_id == user_id)
+        .order_by(Transaction.date.desc(), Transaction.id.desc())
+    )
+    if type:
+        q = q.where(Transaction.type == type)
+    if category_id:
+        q = q.where(Transaction.category_id == category_id)
+    if from_date:
+        q = q.where(Transaction.date >= from_date)
+    if to_date:
+        q = q.where(Transaction.date <= to_date)
+
+    result = await db.execute(q)
+    content = _transactions_to_import_csv(list(result.scalars().all()))
+    filename = f"transactions_{date.today().isoformat()}.csv"
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

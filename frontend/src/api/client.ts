@@ -147,6 +147,20 @@ export const api = {
       request<void>(`/users/${userId}/transactions/${txId}`, {
         method: "DELETE",
       }),
+    exportCsv: async (
+      userId: number,
+      params?: Record<string, string>
+    ): Promise<Blob> => {
+      const q = params ? "?" + new URLSearchParams(params).toString() : "";
+      const res = await fetch(`${BASE}/users/${userId}/transactions/export${q}`, {
+        headers: _token ? { Authorization: `Bearer ${_token}` } : {},
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail ?? "Export failed");
+      }
+      return res.blob();
+    },
   },
   budgets: {
     upsert: (userId: number, body: object) =>
