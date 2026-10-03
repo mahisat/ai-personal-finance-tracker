@@ -69,6 +69,7 @@ class Transaction(Base):
     description: Mapped[Optional[str]] = mapped_column(String(500))
     date: Mapped[date] = mapped_column(Date, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    import_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
 
     user: Mapped["User"] = relationship(back_populates="transactions")
     category: Mapped[Optional["Category"]] = relationship(back_populates="transactions")
