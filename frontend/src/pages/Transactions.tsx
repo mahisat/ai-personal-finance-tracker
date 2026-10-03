@@ -25,6 +25,7 @@ export default function Transactions() {
   const [formError, setFormError] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [editingTxId, setEditingTxId] = useState<number | null>(null);
@@ -103,6 +104,26 @@ export default function Transactions() {
     }
   };
 
+  const handleExport = async () => {
+    setExporting(true);
+    setError("");
+    try {
+      const params: Record<string, string> = {};
+      if (typeFilter) params.type = typeFilter;
+      const blob = await api.transactions.exportCsv(userId, params);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `transactions_${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -139,6 +160,15 @@ export default function Transactions() {
           >
             Download template
           </a>
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={exporting}
+            className="inline-flex items-center gap-1.5 border border-slate-200 text-slate-600
+              hover:bg-slate-50 text-sm font-medium px-3 py-2 rounded-lg transition-colors disabled:opacity-50"
+          >
+            {exporting ? "Exporting…" : "Export CSV"}
+          </button>
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={importing}

@@ -155,3 +155,11 @@ class ImportResult(BaseModel):
     imported: int
     skipped: int
     errors: list[str]
+
+
+# ── Analytics ─────────────────────────────────────────────────
+class CategorySpendingOut(BaseModel):
+    category: str
+    category_id: Optional[int] = None
+    total: Decimal
+    percent: float

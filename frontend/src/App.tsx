@@ -4,11 +4,12 @@ import { AppProvider, useApp } from "./context/AppContext";
 import Dashboard from "./pages/Dashboard";
 import Transactions from "./pages/Transactions";
 import Budgets from "./pages/Budgets";
+import Analytics from "./pages/Analytics";
 import Chat from "./pages/Chat";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 
-type Page = "dashboard" | "transactions" | "budgets" | "chat";
+type Page = "dashboard" | "transactions" | "budgets" | "analytics" | "chat";
 type AuthView = "login" | "register";
 
 const NAV: { id: Page; label: string; icon: React.ReactNode }[] = [
@@ -39,6 +40,16 @@ const NAV: { id: Page; label: string; icon: React.ReactNode }[] = [
       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
           d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+      </svg>
+    ),
+  },
+  {
+    id: "analytics",
+    label: "Analytics",
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+          d="M11 3v18M6 8v13M16 13v8M21 6v15" />
       </svg>
     ),
   },
@@ -82,6 +93,7 @@ const PAGES: Record<Page, React.ReactNode> = {
   dashboard: <Dashboard />,
   transactions: <Transactions />,
   budgets: <Budgets />,
+  analytics: <Analytics />,
   chat: <Chat />,
 };
 
@@ -167,7 +179,11 @@ function AuthenticatedApp() {
       )}
 
       {/* Main content */}
-      <main className="flex-1 md:ml-60 pt-16 md:pt-0 p-6 max-w-4xl">
+      <main
+        className={`flex-1 md:ml-60 pt-16 md:pt-0 p-6 w-full ${
+          page === "analytics" ? "max-w-6xl" : "max-w-4xl"
+        }`}
+      >
         {PAGES[page]}
       </main>
     </div>

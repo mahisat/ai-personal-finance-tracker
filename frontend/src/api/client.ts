@@ -104,6 +104,13 @@ export interface ImportResult {
   errors: string[];
 }
 
+export interface CategorySpending {
+  category: string;
+  category_id: number | null;
+  total: string;
+  percent: number;
+}
+
 // ── API calls ──────────────────────────────────────────────────
 export const api = {
   auth: {
@@ -140,6 +147,20 @@ export const api = {
       request<void>(`/users/${userId}/transactions/${txId}`, {
         method: "DELETE",
       }),
+    exportCsv: async (
+      userId: number,
+      params?: Record<string, string>
+    ): Promise<Blob> => {
+      const q = params ? "?" + new URLSearchParams(params).toString() : "";
+      const res = await fetch(`${BASE}/users/${userId}/transactions/export${q}`, {
+        headers: _token ? { Authorization: `Bearer ${_token}` } : {},
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail ?? "Export failed");
+      }
+      return res.blob();
+    },
   },
   budgets: {
     upsert: (userId: number, body: object) =>
@@ -152,6 +173,17 @@ export const api = {
   },
   insights: {
     list: (userId: number) => request<Insight[]>(`/users/${userId}/insights`),
+  },
+  analytics: {
+    spendingByCategory: (
+      userId: number,
+      params?: Record<string, string>
+    ) => {
+      const q = params ? "?" + new URLSearchParams(params).toString() : "";
+      return request<CategorySpending[]>(
+        `/users/${userId}/analytics/spending-by-category${q}`
+      );
+    },
   },
   chat: {
     ask: (userId: number, message: string) =>

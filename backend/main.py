@@ -8,11 +8,13 @@ Endpoints:
   GET    /templates/import
   POST   /users/{user_id}/transactions
   GET    /users/{user_id}/transactions
+  GET    /users/{user_id}/transactions/export
   DELETE /users/{user_id}/transactions/{tx_id}
   PUT    /users/{user_id}/budgets
   GET    /users/{user_id}/budgets/status
   POST   /users/{user_id}/chat
   GET    /users/{user_id}/insights
+  GET    /users/{user_id}/analytics/spending-by-category
   POST   /users/{user_id}/import
 """
 import csv
@@ -39,7 +41,9 @@ from config import Settings, build_async_engine, build_session_factory, get_sett
 from models import AIConversation, Base, Budget, Category, Transaction, User
 from schemas import (
     BudgetOut, BudgetStatus, BudgetUpsert,
-    CategoryOut, ChatRequest, ChatResponse,
+    CategoryOut,
+    CategorySpendingOut,
+    ChatRequest, ChatResponse,
     ImportResult, InsightOut, LoginRequest, RegisterRequest, TokenResponse,
     TransactionCreate, TransactionOut, TransactionPage, TransactionUpdate,
     UserCreate, UserOut,
@@ -269,6 +273,86 @@ async def list_transactions(
     )
 
 
+IMPORT_CSV_HEADERS = [
+    "Date",
+    "Type",
+    "Amount (₹)",
+    "Category",
+    "Subcategory",
+    "Description",
+]
+
+
+def _import_category_columns(cat: Optional[Category]) -> tuple[str, str]:
+    """Map stored category to template Category / Subcategory columns."""
+    if cat is None:
+        return "", ""
+    if cat.parent_id is not None and cat.parent is not None:
+        return cat.parent.name, cat.name
+    return cat.name, ""
+
+
+def _transactions_to_import_csv(transactions: list[Transaction]) -> bytes:
+    buf = io.StringIO()
+    buf.write("\ufeff")  # UTF-8 BOM for Excel / Google Sheets
+    writer = csv.writer(buf, lineterminator="\r\n")
+    writer.writerow(IMPORT_CSV_HEADERS)
+    for tx in transactions:
+        parent_cat, sub_cat = _import_category_columns(tx.category)
+        tx_type = "Income" if tx.type == "income" else "Expense"
+        amount = f"{Decimal(tx.amount).quantize(Decimal('0.01')):.2f}"
+        writer.writerow(
+            [
+                tx.date.isoformat(),
+                tx_type,
+                amount,
+                parent_cat,
+                sub_cat,
+                tx.description or "",
+            ]
+        )
+    return buf.getvalue().encode("utf-8")
+
+
+@app.get("/users/{user_id}/transactions/export")
+async def export_transactions_csv(
+    user_id: int,
+    db: DB,
+    current_user: CurrentUser,
+    type: Optional[str] = Query(None, pattern="^(income|expense)$"),
+    category_id: Optional[int] = None,
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
+):
+    _require_same_user(current_user, user_id)
+
+    q = (
+        select(Transaction)
+        .options(
+            selectinload(Transaction.category).selectinload(Category.parent),
+        )
+        .where(Transaction.user_id == user_id)
+        .order_by(Transaction.date.desc(), Transaction.id.desc())
+    )
+    if type:
+        q = q.where(Transaction.type == type)
+    if category_id:
+        q = q.where(Transaction.category_id == category_id)
+    if from_date:
+        q = q.where(Transaction.date >= from_date)
+    if to_date:
+        q = q.where(Transaction.date <= to_date)
+
+    result = await db.execute(q)
+    content = _transactions_to_import_csv(list(result.scalars().all()))
+    filename = f"transactions_{date.today().isoformat()}.csv"
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.delete(
     "/users/{user_id}/transactions/{tx_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -440,6 +524,76 @@ async def chat(user_id: int, body: ChatRequest, db: DB, current_user: CurrentUse
     )
 
 
+# ── Analytics ─────────────────────────────────────────────────
+@app.get(
+    "/users/{user_id}/analytics/spending-by-category",
+    response_model=list[CategorySpendingOut],
+)
+async def spending_by_category(
+    user_id: int,
+    db: DB,
+    current_user: CurrentUser,
+    year: int = Query(default=None),
+    month: int = Query(default=None, ge=1, le=12),
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
+):
+    """Expense totals grouped by top-level category for charting."""
+    from datetime import date as dt
+
+    _require_same_user(current_user, user_id)
+
+    today = dt.today()
+    params: dict = {"user_id": user_id}
+
+    date_clause = ""
+    if from_date or to_date:
+        if from_date:
+            date_clause += " AND t.date >= :from_date"
+            params["from_date"] = from_date
+        if to_date:
+            date_clause += " AND t.date <= :to_date"
+            params["to_date"] = to_date
+    else:
+        year = year or today.year
+        month = month or today.month
+        date_clause = " AND YEAR(t.date) = :year AND MONTH(t.date) = :month"
+        params["year"] = year
+        params["month"] = month
+
+    result = await db.execute(
+        text(f"""
+            SELECT
+                COALESCE(parent_cat.name, cat.name, 'Uncategorised') AS category,
+                COALESCE(parent_cat.id, cat.id)                     AS category_id,
+                COALESCE(SUM(t.amount), 0)                            AS total
+            FROM transactions t
+            LEFT JOIN categories cat ON cat.id = t.category_id
+            LEFT JOIN categories parent_cat ON parent_cat.id = cat.parent_id
+            WHERE t.user_id = :user_id
+              AND t.type = 'expense'
+              {date_clause}
+            GROUP BY
+                COALESCE(parent_cat.name, cat.name, 'Uncategorised'),
+                COALESCE(parent_cat.id, cat.id)
+            HAVING total > 0
+            ORDER BY total DESC
+        """),
+        params,
+    )
+    rows = [dict(r) for r in result.mappings().all()]
+    grand = sum(float(r["total"]) for r in rows)
+    return [
+        CategorySpendingOut(
+            category=r["category"],
+            category_id=r["category_id"],
+            total=r["total"],
+            percent=round(float(r["total"]) / grand * 100, 1) if grand else 0.0,
+        )
+        for r in rows
+    ]
+
+
 # ── Insights ──────────────────────────────────────────────────
 @app.get("/users/{user_id}/insights", response_model=list[InsightOut])
 async def get_insights(user_id: int, db: DB, current_user: CurrentUser):
@@ -458,8 +612,13 @@ async def get_insights(user_id: int, db: DB, current_user: CurrentUser):
 
 # ── Health check ──────────────────────────────────────────────
 @app.get("/health")
-async def health():
-    return {"status": "ok"}
+async def health(db: DB):
+    try:
+        await db.execute(text("SELECT 1"))
+        db_status = "connected"
+    except Exception as e:
+        db_status = f"error: {e}"
+    return {"status": "ok", "db": db_status}
 
 
 # ── Import helpers ────────────────────────────────────────────
